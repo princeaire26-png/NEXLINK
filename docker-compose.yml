@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nexlink
+      POSTGRES_PASSWORD: nexlink_dev
+      POSTGRES_DB: nexlink
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations/postgres:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexlink"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis (session store, pub/sub, signaling)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # NEXLINK Python Backend (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://nexlink:nexlink_dev@postgres:5432/nexlink
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET_KEY: dev-secret-change-in-production
+      LOG_LEVEL: INFO
+      CORS_ORIGINS: http://localhost:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (S3-compatible object storage for file transfers)
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: nexlink
+      MINIO_ROOT_PASSWORD: nexlink_dev
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  miniodata:
