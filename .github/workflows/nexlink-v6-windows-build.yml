@@ -27,6 +27,12 @@ jobs:
         run: |
           $buildRoot = Join-Path $env:GITHUB_WORKSPACE 'build-source-v6'
           Set-Location $buildRoot
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if ($iscc) {
+            $isccDir = Split-Path -Parent $iscc.Source
+            $env:PATH = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ine $isccDir.TrimEnd('\') }) -join ';'
+          }
+          if (Get-Command ISCC.exe -ErrorAction SilentlyContinue) { throw 'Could not skip optional Inno Setup installer.' }
           .\BUILD_NEXLINK_WINDOWS.ps1
       - name: Upload v6 executables
         uses: actions/upload-artifact@v4
