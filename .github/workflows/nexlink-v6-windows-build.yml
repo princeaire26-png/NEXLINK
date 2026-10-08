@@ -1,0 +1,39 @@
+name: NEXLINK v6 Windows Build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Extract the committed v6 archive
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'NEXLINK_SUPER_SYSTEM_BUILD_v6.zip'
+          $buildRoot = Join-Path $env:GITHUB_WORKSPACE 'build-source-v6'
+          if (-not (Test-Path -LiteralPath $archive)) { throw "Missing v6 source archive: $archive" }
+          if (Test-Path -LiteralPath $buildRoot) { Remove-Item -LiteralPath $buildRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $buildRoot | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $buildRoot -Force
+          Get-ChildItem -LiteralPath $buildRoot -Directory -Filter '__pycache__' -Recurse | Remove-Item -Recurse -Force
+          if (-not (Test-Path (Join-Path $buildRoot 'BUILD_NEXLINK_WINDOWS.ps1'))) { throw 'The v6 build script is missing.' }
+      - name: Build and self-test both executables
+        shell: pwsh
+        run: |
+          $buildRoot = Join-Path $env:GITHUB_WORKSPACE 'build-source-v6'
+          Set-Location $buildRoot
+          .\BUILD_NEXLINK_WINDOWS.ps1
+      - name: Upload v6 executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXLINK-v6-Windows
+          path: |
+            build-source-v6/dist/NEXLINK-Server.exe
+            build-source-v6/dist/client/NEXLINK-Client.exe
+          if-no-files-found: error
+          retention-days: 30
