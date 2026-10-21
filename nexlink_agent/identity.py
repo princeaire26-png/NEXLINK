@@ -12,7 +12,7 @@ class DeviceIdentity:
     def __init__(self, signing_key: SigningKey, created_at: str | None = None):
         self.signing_key = signing_key
         self.created_at = created_at or __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-        self.device_id = self.derive_device_id(self.public_key_bytes())
+        self.device_id = self.derive_device_id(self.public_key_bytes)
 
     @staticmethod
     def derive_device_id(public_key: bytes) -> str:
