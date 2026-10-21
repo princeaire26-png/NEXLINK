@@ -1,6 +1,6 @@
 """Authenticated NEXLINK agent service, replacing the former Rust agent."""
 from __future__ import annotations
-import asyncio, json, os, socket, threading, time, logging, subprocess
+import asyncio, json, os, socket, threading, time, logging
 import httpx, websockets
 from .config import AgentConfig, identity_path, app_dir
 from .identity import DeviceIdentity
@@ -8,6 +8,7 @@ from .monitor import collect
 from .inventory import collect_inventory
 from .diagnostics import diagnostic_snapshot
 from .remote import capture_frame, apply_input, sync_clipboard, execute_terminal, list_processes, read_file
+from .urls import websocket_base
 from . import network_guard
 
 log=logging.getLogger("nexlink.agent")
@@ -38,7 +39,7 @@ class AgentService:
             if not self.stop_event.is_set(): await asyncio.sleep(3)
 
     async def _connect_once(self):
-        url=self.config.ws_url
+        url=websocket_base(self.config.server_url) if self.config.server_url else ""
         if not url: return
         async with websockets.connect(url,ping_interval=None,max_size=16*1024*1024) as ws:
             self.ws=ws
