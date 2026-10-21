@@ -4,15 +4,14 @@ import argparse, os, platform, sys, time, logging, httpx
 from .config import AgentConfig, identity_path, app_dir
 from .identity import DeviceIdentity
 from .service import AgentService
+from .urls import http_base
 
-def server_http(url:str)->str:
-    return url.replace("wss://","https://").replace("ws://","http://").removesuffix("/ws")
 
 def enroll(config,identity,token):
     ts=int(time.time()); payload={"enrollment_token":token,"device_id":identity.device_id,"public_key":identity.public_key_hex,
       "signature":identity.sign(f"{identity.device_id}:{ts}".encode()).hex(),"os_type":"windows" if platform.system()=="Windows" else platform.system().lower(),
       "os_version":platform.version(),"agent_version":config.agent_version,"timestamp":ts}
-    r=httpx.post(server_http(config.server_url)+"/api/v1/enrollment/enroll",json=payload,timeout=20)
+    r=httpx.post(http_base(config.server_url)+"/api/v1/enrollment/enroll",json=payload,timeout=20)
     r.raise_for_status(); config.enrolled=True; config.save(); return r.json()
 
 def main():
