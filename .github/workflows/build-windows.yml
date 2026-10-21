@@ -45,13 +45,15 @@ jobs:
           cache: pip
           cache-dependency-path: |
             backend/requirements.txt
-            client/windows/requirements.txt
       - name: Generate an ephemeral test signing key
-        run: echo "JWT_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
+        run: |
+          key="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          echo "::add-mask::$key"
+          echo "JWT_SECRET_KEY=$key" >> "$GITHUB_ENV"
       - name: Install backend and client test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt -r client/windows/requirements.txt
+          python -m pip install -r backend/requirements.txt
       - name: Compile and run the complete backend test suite
         working-directory: backend
         run: |
@@ -71,7 +73,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             backend/requirements.txt
-            client/windows/requirements.txt
             requirements-windows.txt
             requirements-windows-build.txt
       - name: Create and activate the Python 3.12 x64 virtual environment
@@ -83,11 +84,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-windows-build.txt
-          python -m pip install -r backend/requirements.txt -r client/windows/requirements.txt
+          python -m pip install -r backend/requirements.txt
       - name: Generate an ephemeral Windows test signing key
         shell: pwsh
         run: |
           $key = python -c 'import secrets; print(secrets.token_urlsafe(48))'
+          Write-Output "::add-mask::$key"
           "JWT_SECRET_KEY=$key" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run Windows-safe existing tests
         working-directory: backend
