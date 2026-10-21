@@ -1,0 +1,4 @@
+-r requirements-windows.txt
+
+# Build tooling only; not needed on end-user Windows PCs.
+PyInstaller>=6.10,<7
