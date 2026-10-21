@@ -1,0 +1,46 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+.next/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+docker-compose.override.yml
+
+# Build artifacts
+*.log
+coverage/
+.nyc_output/
+__pycache__/
+*.py[cod]
+*.spec.bak
+
+# Test
+*.test.ts.bak
+
+# Secrets (never commit)
+*.pem
+*.key
+identity/
+credentials/
+build/
