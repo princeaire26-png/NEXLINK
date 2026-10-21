@@ -1,9 +1,7 @@
-"""NEXLINK Server native desktop console.
+"""NEXLINK Windows Server desktop control panel.
 
-The server executable is the primary NEXLINK operator console. It owns the
-FastAPI control plane in a background thread and exposes a polished PyQt6
-Command Center for fleet management, remote access, Network Guard, AI,
-security, automation and support.
+The FastAPI/Uvicorn control plane runs in a background thread while this
+PyQt6 window provides the operator-facing server UI.
 """
 from __future__ import annotations
 
@@ -13,341 +11,197 @@ import threading
 import traceback
 from pathlib import Path
 
-CLIENT_UI = Path(__file__).resolve().parent / "client" / "windows"
-if CLIENT_UI.exists() and str(CLIENT_UI) not in sys.path:
-    sys.path.insert(0, str(CLIENT_UI))
-
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPushButton, QStackedWidget,
-    QVBoxLayout, QWidget, QProgressBar
+    QApplication, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget
 )
 
 import server_launcher
 
+APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ICON = APP_ROOT / "assets" / "icons" / "nexlink-server.ico"
 
-class ServerWorker:
-    def __init__(self, owner):
-        self.owner = owner
-        self.thread = threading.Thread(target=self.run, daemon=True)
+
+class ServerWorker(QObject):
+    started = pyqtSignal()
+    stopped = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, auto_infra: bool = True):
+        super().__init__()
+        self.auto_infra = auto_infra
         self.server = None
-        self.discovery = None
-        self.error = None
-
-    def start(self):
-        self.thread.start()
 
     def run(self):
         try:
             server_launcher._ensure_server_config()
-            server_launcher._start_infrastructure()
+            if self.auto_infra:
+                server_launcher._start_infrastructure()
+            elif not (
+                server_launcher._port_open("127.0.0.1", 5432)
+                and server_launcher._port_open("127.0.0.1", 6379)
+            ):
+                raise RuntimeError("PostgreSQL/Redis are not running.")
+
             server_launcher._configure_api_firewall()
             from app.main import app
             import uvicorn
+
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
                 port=int(os.environ.get("PORT", "8000")),
-                log_level="warning",
+                log_level="info",
             )
             self.server = uvicorn.Server(config)
-            from nexlink_discovery import DiscoveryResponder
-            self.discovery = DiscoveryResponder(api_port=int(os.environ.get("PORT", "8000"))).start()
-            self.owner.server_started.emit()
+            self.started.emit()
             self.server.run()
-            if self.discovery:
-                self.discovery.stop()
-            self.owner.server_stopped.emit()
+            self.stopped.emit()
         except Exception as exc:
-            self.error = f"{exc}\n\n{traceback.format_exc()}"
-            self.owner.server_failed.emit(self.error)
+            self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")
 
     def stop(self):
-        if self.server:
+        if self.server is not None:
             self.server.should_exit = True
-        if self.discovery:
-            self.discovery.stop()
-
-
-class LoginCard(QFrame):
-    authenticated = pyqtSignal(object)
-
-    def __init__(self, base_url: str, parent=None):
-        super().__init__(parent)
-        self.base_url = base_url
-        self.setObjectName("Card")
-        root = QVBoxLayout(self)
-        root.setContentsMargins(32, 28, 32, 28)
-        title = QLabel("Operator sign in")
-        title.setObjectName("CardTitle")
-        root.addWidget(title)
-        sub = QLabel("Sign in to manage your NEXLINK fleet.")
-        sub.setObjectName("Muted")
-        root.addWidget(sub)
-        form = QFormLayout()
-        self.email = QLineEdit()
-        self.email.setPlaceholderText("admin@example.com")
-        self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password.setPlaceholderText("Password")
-        self.mfa = QLineEdit()
-        self.mfa.setPlaceholderText("6-digit MFA code, if enabled")
-        form.addRow("Email", self.email)
-        form.addRow("Password", self.password)
-        form.addRow("MFA", self.mfa)
-        root.addLayout(form)
-        buttons = QHBoxLayout()
-        self.button = QPushButton("Sign in")
-        self.button.setObjectName("Primary")
-        self.button.clicked.connect(self.login)
-        buttons.addWidget(self.button)
-        register = QPushButton("Create first account")
-        register.clicked.connect(self.register)
-        buttons.addWidget(register)
-        root.addLayout(buttons)
-        self.status = QLabel("Server is ready. On a new installation, create the first owner account here.")
-        self.status.setObjectName("Muted")
-        root.addWidget(self.status)
-
-    def login(self):
-        try:
-            from nexlink_ui import ApiClient
-            api = ApiClient(self.base_url)
-            data = api.login(self.email.text().strip(), self.password.text(), self.mfa.text().strip() or None)
-            self.authenticated.emit((api, data))
-        except Exception as exc:
-            self.status.setText(str(exc))
-            QMessageBox.warning(self, "NEXLINK Sign In", str(exc))
-
-    def register(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Create NEXLINK Owner")
-        dialog.resize(430, 240)
-        form = QFormLayout(dialog)
-        name = QLineEdit(); email = QLineEdit(); password = QLineEdit()
-        password.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Name", name); form.addRow("Email", email); form.addRow("Password", password)
-        create = QPushButton("Create Owner Account")
-        form.addRow(create)
-        def create_account():
-            try:
-                from nexlink_ui import ApiClient
-                api = ApiClient(self.base_url)
-                response = api.request("POST", "/api/v1/auth/register", json={
-                    "name": name.text().strip(), "email": email.text().strip(), "password": password.text(),
-                })
-                response.raise_for_status()
-                data = response.json()
-                self.authenticated.emit((api, data))
-                dialog.accept()
-            except Exception as exc:
-                QMessageBox.warning(dialog, "NEXLINK Registration", str(exc))
-        create.clicked.connect(create_account)
-        dialog.exec()
 
 
 class NEXLINKServerWindow(QMainWindow):
-    server_started = pyqtSignal()
-    server_stopped = pyqtSignal()
-    server_failed = pyqtSignal(str)
-
-    def __init__(self):
+    def __init__(self, start_server: bool = True):
         super().__init__()
-        self.worker = None
-        self.api = None
-        self.setWindowTitle("NEXLINK — Server Command Center")
-        self.resize(1440, 900)
-        self.setMinimumSize(1180, 760)
-        self._build_shell()
-        self._apply_theme()
-        self.server_started.connect(self._on_server_started)
-        self.server_stopped.connect(self._on_server_stopped)
-        self.server_failed.connect(self._on_server_failed)
-        self._start_server()
+        self.setWindowTitle("NEXLINK Server")
+        self.resize(820, 560)
+        if ICON.exists():
+            self.setWindowIcon(QIcon(str(ICON)))
+        self._thread: QThread | None = None
+        self._worker: ServerWorker | None = None
 
-    def _build_shell(self):
-        central = QWidget()
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root = QWidget()
+        layout = QVBoxLayout(root)
 
-        sidebar = QFrame()
-        sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(235)
-        side = QVBoxLayout(sidebar)
-        side.setContentsMargins(18, 22, 18, 18)
-        brand = QLabel("NEXLINK")
-        brand.setObjectName("Brand")
-        side.addWidget(brand)
-        sub = QLabel("SERVER COMMAND CENTER")
-        sub.setObjectName("BrandSub")
-        side.addWidget(sub)
-        side.addSpacing(28)
-        self.nav = []
-        for label, index in [("Overview", 0), ("Fleet & Remote", 1), ("Network Guard", 2), ("NEXLINK AI", 3), ("Security Center", 4), ("Automation", 5), ("Support Center", 6)]:
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.clicked.connect(lambda checked, i=index: self._select(i))
-            side.addWidget(b)
-            self.nav.append(b)
-        side.addStretch()
-        self.server_badge = QLabel("●  STARTING")
-        self.server_badge.setObjectName("StatusBadge")
-        side.addWidget(self.server_badge)
-        self.api_label = QLabel("API  :8000")
-        self.discovery_label = QLabel("LAN clients: 0 discovered")
-        self.discovery_label.setObjectName("Muted")
-        self.api_label.setObjectName("Muted")
-        side.addWidget(self.api_label)
-        side.addWidget(self.discovery_label)
-        root.addWidget(side)
+        title = QLabel("NEXLINK Server")
+        title.setStyleSheet("font-size: 28px; font-weight: bold;")
+        layout.addWidget(title)
+        subtitle = QLabel("NEXLINK Control Plane • FastAPI • PostgreSQL • Redis • LAN-first")
+        layout.addWidget(subtitle)
 
-        body = QVBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        header = QFrame()
-        header.setObjectName("Header")
-        h = QHBoxLayout(header)
-        h.setContentsMargins(26, 16, 26, 16)
-        self.page_title = QLabel("Overview")
-        self.page_title.setObjectName("PageTitle")
-        h.addWidget(self.page_title)
-        h.addStretch()
-        self.health = QLabel("Infrastructure: checking…")
-        self.health.setObjectName("Muted")
-        h.addWidget(self.health)
-        body.addWidget(header)
+        status_box = QGroupBox("Server Status")
+        form = QFormLayout(status_box)
+        self.status = QLabel("Starting…")
+        self.address = QLabel("http://0.0.0.0:8000")
+        self.health = QLabel("http://<SERVER-IP>:8000/health")
+        form.addRow("Status:", self.status)
+        form.addRow("API:", self.address)
+        form.addRow("Health:", self.health)
+        layout.addWidget(status_box)
 
-        self.stack = QStackedWidget()
-        body.addWidget(self.stack)
-        root.addLayout(body, 1)
-        self.setCentralWidget(central)
+        controls = QHBoxLayout()
+        self.start_btn = QPushButton("Start Server")
+        self.stop_btn = QPushButton("Stop Server")
+        self.restart_btn = QPushButton("Restart")
+        self.start_btn.clicked.connect(self.start_server)
+        self.stop_btn.clicked.connect(self.stop_server)
+        self.restart_btn.clicked.connect(self.restart_server)
+        controls.addWidget(self.start_btn)
+        controls.addWidget(self.stop_btn)
+        controls.addWidget(self.restart_btn)
+        layout.addLayout(controls)
 
-        self._show_login_or_dashboard()
-        self.discovery_timer = QTimer(self)
-        self.discovery_timer.timeout.connect(self._refresh_discovery)
-        self.discovery_timer.start(2000)
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("NEXLINK server events appear here…")
+        layout.addWidget(self.log)
 
+        info = QLabel(
+            "NEXLINK Server is the control plane: identity, device registry, signaling, relay orchestration, audit, policies, AI governance and fleet APIs.\n"
+            "The Windows Client remains the operator console and embeds Network Guard; no separate Internet Guard application is used."
+        )
+        layout.addWidget(info)
+        self.setCentralWidget(root)
+        if start_server:
+            self.start_server()
 
-    def _refresh_discovery(self):
-        try:
-            from nexlink_discovery import get_discovered_clients
-            clients = get_discovered_clients()
-            self.discovery_label.setText(f"LAN clients: {len(clients)} discovered")
-        except Exception:
-            pass
-
-    def _show_login_or_dashboard(self):
-        self.login_page = QWidget()
-        lay = QVBoxLayout(self.login_page)
-        lay.setContentsMargins(55, 55, 55, 55)
-        hero = QLabel("Your IT operating system.")
-        hero.setObjectName("Hero")
-        lay.addWidget(hero)
-        text = QLabel("Remote access  •  Fleet intelligence  •  Network Guard  •  AI automation  •  Zero-trust security")
-        text.setObjectName("Muted")
-        lay.addWidget(text)
-        lay.addSpacing(25)
-        self.login_card = LoginCard("http://127.0.0.1:8000", self)
-        self.login_card.authenticated.connect(self._authenticated)
-        self.login_card.setMaximumWidth(620)
-        lay.addWidget(self.login_card, alignment=Qt.AlignmentFlag.AlignLeft)
-        lay.addStretch()
-        self.stack.addWidget(self.login_page)
-        self._select(0)
-
-    def _authenticated(self, payload):
-        self.api, user_data = payload
-        self._build_platform_pages()
-        self.server_badge.setText("●  ONLINE")
-        self.server_badge.setObjectName("StatusBadgeOnline")
-        self.page_title.setText("Overview")
-        self.nav[0].setChecked(True)
-        self.stack.setCurrentIndex(1)
-        self.health.setText(f"Operator: {user_data['user']['name']}  •  role={user_data['user']['role']}")
-
-    def _build_platform_pages(self):
-        from nexlink_ui import DashboardTab, DevicesTab, AlertsTab, NetworkTab, AITab, SecurityTab, AutomationTab, SupportTab
-        pages = [
-            DashboardTab(self.api),
-            DevicesTab(self.api),
-            NetworkTab(self.api),
-            AITab(self.api),
-            SecurityTab(self.api),
-            AutomationTab(self.api),
-            SupportTab(self.api),
-        ]
-        for p in pages:
-            self.stack.addWidget(p)
-
-    def _select(self, index):
-        if index >= len(self.nav):
+    def start_server(self):
+        if self._thread and self._thread.isRunning():
             return
-        for i, b in enumerate(self.nav):
-            b.setChecked(i == index)
-        self.page_title.setText(self.nav[index].text())
-        if self.api:
-            self.stack.setCurrentIndex(index + 1)
-        else:
-            self.stack.setCurrentIndex(0)
+        self.status.setText("Starting…")
+        self.log.append("Starting NEXLINK FastAPI server and infrastructure…")
+        self._thread = QThread(self)
+        self._worker = ServerWorker(auto_infra=True)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.started.connect(self._on_started)
+        self._worker.stopped.connect(self._on_stopped)
+        self._worker.failed.connect(self._on_failed)
+        self._thread.start()
 
-    def _start_server(self):
-        self.server_badge.setText("●  STARTING")
-        self.health.setText("Starting PostgreSQL/API…")
-        self.worker = ServerWorker(self)
-        self.worker.start()
+    def _on_started(self):
+        self.status.setText("RUNNING")
+        self.log.append("NEXLINK API is listening on TCP 8000.")
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
 
-    def _on_server_started(self):
-        self.server_badge.setText("●  SERVER ONLINE")
-        self.health.setText("API listening on 8000  •  LAN control plane ready")
+    def _on_stopped(self):
+        self.status.setText("STOPPED")
+        self.log.append("NEXLINK API stopped.")
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
 
-    def _on_server_stopped(self):
-        self.server_badge.setText("●  STOPPED")
-        self.health.setText("NEXLINK API stopped")
+    def _on_failed(self, message: str):
+        self.status.setText("FAILED")
+        self.log.append(message)
+        QMessageBox.critical(self, "NEXLINK Server", message)
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
 
-    def _on_server_failed(self, message):
-        self.server_badge.setText("●  SETUP REQUIRED")
-        self.health.setText("PostgreSQL / infrastructure setup required")
-        QMessageBox.critical(self, "NEXLINK Server Setup", message)
+    def stop_server(self):
+        if self._worker:
+            self._worker.stop()
+
+    def restart_server(self):
+        self.stop_server()
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait(5000)
+        self._thread = None
+        self._worker = None
+        self.start_server()
 
     def closeEvent(self, event):
-        if self.worker:
-            self.worker.stop()
+        self.stop_server()
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait(5000)
         event.accept()
-
-    def _apply_theme(self):
-        self.setStyleSheet("""
-        QMainWindow, QWidget { background: #0b1220; color: #e8eef8; font-family: 'Segoe UI'; font-size: 13px; }
-        #Sidebar { background: #07101d; border-right: 1px solid #1d2a3d; }
-        #Brand { font-size: 28px; font-weight: 800; letter-spacing: 2px; }
-        #BrandSub { color: #71809a; font-size: 10px; letter-spacing: 1.5px; }
-        QPushButton { background: #111c2d; border: 1px solid #1e2e44; border-radius: 8px; padding: 11px 13px; text-align: left; color: #b9c6d8; }
-        QPushButton:hover { background: #17263a; color: #fff; }
-        QPushButton:checked { background: #173b66; border-color: #2f79c7; color: #fff; }
-        #Header { background: #0d1727; border-bottom: 1px solid #1d2a3d; }
-        #PageTitle { font-size: 22px; font-weight: 700; }
-        #Hero { font-size: 36px; font-weight: 800; }
-        #Muted { color: #8190a7; }
-        #StatusBadge, #StatusBadgeOnline { padding: 8px 10px; border-radius: 8px; color: #f4b942; background: #2b2412; }
-        #StatusBadgeOnline { color: #58d68d; background: #10291d; }
-        #Card { background: #101b2c; border: 1px solid #203149; border-radius: 14px; }
-        #CardTitle { font-size: 18px; font-weight: 700; }
-        #Primary { background: #246fba; border-color: #2d84d1; text-align: center; color: white; font-weight: 700; }
-        QLineEdit, QComboBox, QTextEdit, QTableWidget { background: #0d1727; border: 1px solid #24354d; border-radius: 7px; padding: 7px; color: #e8eef8; }
-        QGroupBox { border: 1px solid #203149; border-radius: 10px; margin-top: 12px; padding: 12px; font-weight: 700; }
-        QTableWidget { gridline-color: #1c2b40; }
-        QHeaderView::section { background: #111e31; color: #aebbd0; padding: 7px; border: 0; }
-        """)
 
 
 def _self_test() -> int:
-    from app.main import app
-    required = {"/health", "/api/v1/remote/sessions"}
-    paths = {getattr(route, "path", "") for route in app.routes}
+    import importlib
+    import server_launcher
+    server_launcher._ensure_server_config()
+    from app.main import app as fastapi_app
+    required = {"/health", "/api/v1/remote/sessions", "/ws/control/{session_id}"}
+    paths = {getattr(route, "path", "") for route in fastapi_app.routes}
     missing = sorted(required - paths)
-    print("NEXLINK Server GUI self-test:", "OK" if not missing else "MISSING " + ", ".join(missing))
+    try:
+        for module_name in ("nexlink_ai.planner", "nexlink_ai.policy", "nexlink_ai.provider", "nexlink_ai.tools"):
+            importlib.import_module(module_name)
+        app = QApplication.instance() or QApplication([])
+        app.setApplicationName("NEXLINK Server Build Smoke Test")
+        window = NEXLINKServerWindow(start_server=False)
+        assert window.windowTitle() == "NEXLINK Server"
+        assert not window.windowIcon().isNull()
+        window.show()
+        app.processEvents()
+        assert window.isVisible()
+        window.close()
+        app.processEvents()
+    except Exception as exc:
+        print(f"NEXLINK Server UI smoke test failed: {exc}")
+        return 1
+    print("NEXLINK Server FastAPI, AI modules and Qt UI smoke test:",
+          "OK" if not missing else "MISSING " + ", ".join(missing))
     return 0 if not missing else 1
 
 
@@ -356,7 +210,6 @@ def main() -> int:
         return _self_test()
     app = QApplication(sys.argv)
     app.setApplicationName("NEXLINK Server")
-    app.setApplicationDisplayName("NEXLINK Server")
     window = NEXLINKServerWindow()
     window.show()
     return app.exec()
