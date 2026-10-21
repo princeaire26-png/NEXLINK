@@ -2,12 +2,19 @@ name: NEXLINK Windows Build
 
 on:
   workflow_dispatch:
+    inputs:
+      windows_build_only:
+        description: Run the Windows package and GUI smoke checks without backend tests
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   backend-tests:
+    if: ${{ !inputs.windows_build_only }}
     name: Backend tests with real PostgreSQL and Redis
     runs-on: ubuntu-latest
     services:
@@ -63,6 +70,7 @@ jobs:
           python -m pytest -q
 
   windows-build:
+    if: ${{ always() && (inputs.windows_build_only || needs.backend-tests.result == 'success') }}
     name: Build and smoke-test Windows x64 bundles
     runs-on: windows-latest
     needs: backend-tests
