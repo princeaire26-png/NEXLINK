@@ -23,6 +23,7 @@ a = Analysis(
             'uvicorn.protocols.http.auto',
             'uvicorn.protocols.websockets.auto',
             'sqlalchemy.dialects.postgresql.asyncpg',
+            'passlib.handlers.bcrypt',
         ]
     ),
     datas=[

@@ -26,10 +26,18 @@ $selfTestLocalAppData = Join-Path $env:TEMP "NEXLINK-build-self-test-$([Guid]::N
 New-Item -ItemType Directory -Path $selfTestLocalAppData -Force | Out-Null
 try {
     $env:LOCALAPPDATA = $selfTestLocalAppData
-    & dist/NEXLINK-Server/NEXLINK-Server.exe --self-test
-    if ($LASTEXITCODE -ne 0) { throw 'NEXLINK Server self-test failed.' }
-    & dist/NEXLINK-Client/NEXLINK-Client.exe --self-test
-    if ($LASTEXITCODE -ne 0) { throw 'NEXLINK Client self-test failed.' }
+    $serverSelfTestOutput = & dist/NEXLINK-Server/NEXLINK-Server.exe --self-test 2>&1
+    $serverSelfTestExitCode = $LASTEXITCODE
+    $serverSelfTestOutput | ForEach-Object { Write-Host $_ }
+    if ($serverSelfTestExitCode -ne 0 -or ($serverSelfTestOutput -join [Environment]::NewLine) -notmatch 'NEXLINK Server FastAPI, AI modules and Qt UI smoke test: OK') {
+        throw "NEXLINK Server self-test failed (exit code $serverSelfTestExitCode)."
+    }
+    $clientSelfTestOutput = & dist/NEXLINK-Client/NEXLINK-Client.exe --self-test 2>&1
+    $clientSelfTestExitCode = $LASTEXITCODE
+    $clientSelfTestOutput | ForEach-Object { Write-Host $_ }
+    if ($clientSelfTestExitCode -ne 0 -or ($clientSelfTestOutput -join [Environment]::NewLine) -notmatch 'NEXLINK Client self-test and Qt UI smoke test OK') {
+        throw "NEXLINK Client self-test failed (exit code $clientSelfTestExitCode)."
+    }
 }
 finally {
     if ($null -eq $originalLocalAppData) {

@@ -178,13 +178,14 @@ class NEXLINKServerWindow(QMainWindow):
 
 def _self_test() -> int:
     import importlib
-    import server_launcher
-    server_launcher._ensure_server_config()
-    from app.main import app as fastapi_app
-    required = {"/health", "/api/v1/remote/sessions", "/ws/control/{session_id}"}
-    paths = {getattr(route, "path", "") for route in fastapi_app.routes}
-    missing = sorted(required - paths)
+
     try:
+        import server_launcher
+        server_launcher._ensure_server_config()
+        from app.main import app as fastapi_app
+        required = {"/health", "/api/v1/remote/sessions", "/ws/control/{session_id}"}
+        paths = {getattr(route, "path", "") for route in fastapi_app.routes}
+        missing = sorted(required - paths)
         for module_name in ("nexlink_ai.planner", "nexlink_ai.policy", "nexlink_ai.provider", "nexlink_ai.tools"):
             importlib.import_module(module_name)
         app = QApplication.instance() or QApplication([])
@@ -198,12 +199,11 @@ def _self_test() -> int:
         window.close()
         app.processEvents()
     except Exception as exc:
-        print(f"NEXLINK Server UI smoke test failed: {exc}")
+        print(f"NEXLINK Server self-test failed: {type(exc).__name__}: {exc}")
         return 1
     print("NEXLINK Server FastAPI, AI modules and Qt UI smoke test:",
           "OK" if not missing else "MISSING " + ", ".join(missing))
     return 0 if not missing else 1
-
 
 def main() -> int:
     if "--self-test" in sys.argv:
