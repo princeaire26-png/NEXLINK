@@ -108,7 +108,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://nexlink@127.0.0.1:5432/nexlink
           PYTHONPATH: ${{ github.workspace }}
           REDIS_URL: redis://127.0.0.1:6379/0
-        run: python -m pytest -q tests/test_agent_urls.py tests/test_agent_identity.py tests/test_ed25519.py
+        run: python -m pytest -q tests/test_agent_urls.py tests/test_agent_identity.py tests/test_ed25519.py tests/test_discovery.py
       - name: Build, PE-verify, smoke-test, and package all three ZIPs
         shell: pwsh
         run: .\BUILD_NEXLINK_WINDOWS.ps1

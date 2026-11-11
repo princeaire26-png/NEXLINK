@@ -93,7 +93,8 @@ def main() -> int:
         "Client\\NEXLINK-Client.exe is the operator and endpoint application.\n"
         "Server\\NEXLINK-Server.exe is the FastAPI control plane and desktop manager.\n"
         "Keep each executable beside its _internal folder. The Server requires "
-        "Docker Desktop or PostgreSQL and Redis services already running.\n"
+        "PostgreSQL or Docker Desktop for automatic PostgreSQL setup; Redis is optional "
+        "for the current core runtime. LAN discovery uses UDP 39501 and does not enroll devices.\n"
         "Run both applications as Administrator where Windows Firewall/Network Guard requires it.\n"
         "Configuration and generated secrets are kept outside this package under %LOCALAPPDATA%\\NEXLINK.\n",
         encoding="utf-8",

@@ -259,32 +259,27 @@ def _start_infrastructure() -> str:
     return _ensure_database()
 
 
-def _configure_api_firewall() -> None:
-    if os.name != "nt":
+def _configure_api_firewall(*, platform_name: str | None = None, run=None) -> None:
+    """Allow the API and UDP discovery independently on Windows Private/Domain LANs."""
+    if (os.name if platform_name is None else platform_name) != "nt":
         return
-    rule = "NEXLINK-Server-API"
-    result = subprocess.run(
-        ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule}"],
-        capture_output=True, text=True, check=False,
+    run = run or subprocess.run
+    rules = (
+        ("NEXLINK-Server-API", "TCP", 8000),
+        ("NEXLINK-LAN-Discovery", "UDP", 39501),
     )
-    if "LocalPort" in result.stdout and "8000" in result.stdout:
-        return
-    subprocess.run([
-        "netsh", "advfirewall", "firewall", "add", "rule",
-        f"name={rule}", "dir=in", "action=allow", "protocol=TCP",
-        "localport=8000", "profile=private,domain",
-    ], check=True)
-    discovery_rule = "NEXLINK-LAN-Discovery"
-    discovery_check = subprocess.run(
-        ["netsh", "advfirewall", "firewall", "show", "rule", f"name={discovery_rule}"],
-        capture_output=True, text=True, check=False,
-    )
-    if "LocalPort" not in discovery_check.stdout or "39501" not in discovery_check.stdout:
-        subprocess.run([
+    for rule, protocol, port in rules:
+        result = run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule}"],
+            capture_output=True, text=True, check=False,
+        )
+        if "LocalPort" in result.stdout and str(port) in result.stdout:
+            continue
+        run([
             "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={discovery_rule}", "dir=in", "action=allow", "protocol=UDP",
-            "localport=39501", "profile=private,domain",
-        ], check=False)
+            f"name={rule}", "dir=in", "action=allow", f"protocol={protocol}",
+            f"localport={port}", "profile=private,domain",
+        ], check=True)
 
 
 def main() -> int:

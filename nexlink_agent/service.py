@@ -10,6 +10,7 @@ from .diagnostics import diagnostic_snapshot
 from .remote import capture_frame, apply_input, sync_clipboard, execute_terminal, list_processes, read_file
 from .urls import websocket_base
 from . import network_guard
+from nexlink_discovery import ClientAnnouncer
 
 log=logging.getLogger("nexlink.agent")
 
@@ -18,13 +19,23 @@ class AgentService:
         self.config=config; self.identity=identity; self.stop_event=threading.Event(); self.session_token=None
         self.ws=None
         self.remote_tasks: dict[str, asyncio.Task] = {}
+        self.discovery_announcer: ClientAnnouncer | None = None
 
     def start(self):
+        if self.discovery_announcer is None:
+            self.discovery_announcer = ClientAnnouncer(
+                device_id=self.identity.device_id,
+                device_name=self.config.device_name,
+                version=self.config.agent_version,
+            ).start()
         t=threading.Thread(target=lambda: asyncio.run(self._run()),daemon=True,name="NEXLINK-Agent")
         t.start(); self.thread=t; return t
 
     def stop(self):
         self.stop_event.set()
+        if self.discovery_announcer is not None:
+            self.discovery_announcer.stop()
+            self.discovery_announcer = None
         for task in list(self.remote_tasks.values()):
             task.cancel()
         if self.thread and self.thread.is_alive(): self.thread.join(timeout=3)
