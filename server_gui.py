@@ -8,17 +8,19 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget
+    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget
 )
 
 import server_launcher
+from nexlink_discovery import DiscoveryResponder, get_discovered_clients
 
 APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ICON = APP_ROOT / "assets" / "icons" / "nexlink-server.ico"
@@ -33,6 +35,7 @@ class ServerWorker(QObject):
         super().__init__()
         self.auto_infra = auto_infra
         self.server = None
+        self.discovery: DiscoveryResponder | None = None
 
     def run(self):
         try:
@@ -49,15 +52,22 @@ class ServerWorker(QObject):
             from app.main import app
             import uvicorn
 
+            api_port = int(os.environ.get("PORT", "8000"))
+            self.discovery = DiscoveryResponder(api_port=api_port).start()
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
-                port=int(os.environ.get("PORT", "8000")),
+                port=api_port,
                 log_level="info",
             )
             self.server = uvicorn.Server(config)
             self.started.emit()
-            self.server.run()
+            try:
+                self.server.run()
+            finally:
+                if self.discovery is not None:
+                    self.discovery.stop()
+                    self.discovery = None
             self.stopped.emit()
         except Exception as exc:
             self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")
@@ -71,7 +81,7 @@ class NEXLINKServerWindow(QMainWindow):
     def __init__(self, start_server: bool = True):
         super().__init__()
         self.setWindowTitle("NEXLINK Server")
-        self.resize(820, 560)
+        self.resize(900, 720)
         if ICON.exists():
             self.setWindowIcon(QIcon(str(ICON)))
         self._thread: QThread | None = None
@@ -113,14 +123,57 @@ class NEXLINKServerWindow(QMainWindow):
         self.log.setPlaceholderText("NEXLINK server events appear here…")
         layout.addWidget(self.log)
 
+        clients_box = QGroupBox("Clients detected on this LAN")
+        clients_layout = QVBoxLayout(clients_box)
+        self.discovery_status = QLabel(
+            "Waiting for client announcements. Detection does not enroll or approve a device."
+        )
+        clients_layout.addWidget(self.discovery_status)
+        self.clients_table = QTableWidget(0, 4)
+        self.clients_table.setHorizontalHeaderLabels(["Device", "LAN address", "Operating system", "Last seen"])
+        self.clients_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.clients_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.clients_table.horizontalHeader().setStretchLastSection(True)
+        clients_layout.addWidget(self.clients_table)
+        layout.addWidget(clients_box)
+
         info = QLabel(
             "NEXLINK Server is the control plane: identity, device registry, signaling, relay orchestration, audit, policies, AI governance and fleet APIs.\n"
             "The Windows Client remains the operator console and embeds Network Guard; no separate Internet Guard application is used."
         )
         layout.addWidget(info)
         self.setCentralWidget(root)
+        self.discovery_timer = QTimer(self)
+        self.discovery_timer.setInterval(2000)
+        self.discovery_timer.timeout.connect(self.refresh_discovered_clients)
+        self.discovery_timer.start()
+        self.refresh_discovered_clients()
         if start_server:
             self.start_server()
+
+    def refresh_discovered_clients(self):
+        clients = get_discovered_clients()
+        self.clients_table.setRowCount(len(clients))
+        now = int(time.time())
+        for row, client in enumerate(clients):
+            seen_at = int(client.get("last_seen") or client.get("timestamp") or now)
+            age = max(0, now - seen_at)
+            values = (
+                client.get("device_name") or client.get("hostname") or "Unknown device",
+                client.get("ip") or "Unknown",
+                client.get("os") or "Unknown",
+                "just now" if age < 2 else f"{age}s ago",
+            )
+            for column, value in enumerate(values):
+                self.clients_table.setItem(row, column, QTableWidgetItem(str(value)))
+        if clients:
+            self.discovery_status.setText(
+                f"{len(clients)} client(s) seen in the last 20 seconds. Enrollment and approval are still required."
+            )
+        else:
+            self.discovery_status.setText(
+                "No clients seen in the last 20 seconds. Check that both apps are on the same LAN and UDP 39501 is allowed."
+            )
 
     def start_server(self):
         if self._thread and self._thread.isRunning():
@@ -169,6 +222,7 @@ class NEXLINKServerWindow(QMainWindow):
         self.start_server()
 
     def closeEvent(self, event):
+        self.discovery_timer.stop()
         self.stop_server()
         if self._thread:
             self._thread.quit()
@@ -193,6 +247,8 @@ def _self_test() -> int:
         window = NEXLINKServerWindow(start_server=False)
         assert window.windowTitle() == "NEXLINK Server"
         assert not window.windowIcon().isNull()
+        assert window.clients_table.columnCount() == 4
+        assert window.discovery_timer.isActive()
         window.show()
         app.processEvents()
         assert window.isVisible()

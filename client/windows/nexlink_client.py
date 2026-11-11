@@ -2,7 +2,8 @@
 from __future__ import annotations
 import os, platform, sys, time
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QLineEdit, QPushButton, QDialog, QFormLayout, QMessageBox, QTextEdit
+from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel, QLineEdit, QPushButton, QDialog, QFormLayout, QMessageBox, QTextEdit, QComboBox
 from PyQt6.QtGui import QIcon
 from nexlink_agent.config import AgentConfig, identity_path
 from nexlink_agent.identity import DeviceIdentity
@@ -16,16 +17,88 @@ from nexlink_guard.common.overlay_widget import OverlayWidget
 from nexlink_guard.common.session_manager import SessionManager
 from nexlink_guard.common.admin_panel import open_admin_panel
 from nexlink_ui import ApiClient, DashboardTab, DevicesTab, AlertsTab, NetworkTab, AITab, SecurityTab, AutomationTab, SupportTab
+from nexlink_discovery import discover_servers
 
 APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
 ICON = APP_ROOT / "assets" / "icons" / "nexlink-client.ico"
 
+class ServerDiscoveryWorker(QThread):
+    servers_found = pyqtSignal(list)
+
+    def run(self):
+        try:
+            servers = discover_servers(timeout=2.5)
+        except Exception:
+            servers = []
+        self.servers_found.emit(servers)
+
+
 class SetupDialog(QDialog):
-    def __init__(self,parent=None):
-        super().__init__(parent); self.setWindowTitle('NEXLINK Setup'); self.resize(520,260); form=QFormLayout(self)
+    def __init__(self,parent=None,auto_discover=True):
+        super().__init__(parent); self.setWindowTitle('NEXLINK Setup'); self.resize(560,340); form=QFormLayout(self)
+        self._discovery_thread = None
         self.server=QLineEdit(); self.server.setPlaceholderText('192.168.1.20:8000 or https://server.example.com'); self.token=QLineEdit(); self.token.setPlaceholderText('Enrollment token'); self.name=QLineEdit(platform.node()); self.passphrase=QLineEdit('nexlink-local'); self.passphrase.setEchoMode(QLineEdit.EchoMode.Password)
-        for label,widget in [('Server:',self.server),('Enrollment token:',self.token),('Device name:',self.name),('Identity passphrase:',self.passphrase)]: form.addRow(label,widget)
+        self.discovered_servers=QComboBox()
+        self.discovered_servers.addItem('Choose a NEXLINK server found on this LAN…','')
+        self.discovered_servers.currentIndexChanged.connect(self._select_discovered_server)
+        self.discovery_status=QLabel('Searching for NEXLINK servers on this LAN…')
+        self.find_servers_button=QPushButton('Scan LAN for servers')
+        self.find_servers_button.clicked.connect(self.find_servers)
+        form.addRow('Server:',self.server)
+        form.addRow('Discovered servers:',self.discovered_servers)
+        form.addRow('Discovery:',self.discovery_status)
+        form.addRow(self.find_servers_button)
+        for label,widget in [('Enrollment token:',self.token),('Device name:',self.name),('Identity passphrase:',self.passphrase)]: form.addRow(label,widget)
         b=QPushButton('Save / Enroll'); b.clicked.connect(self.accept_setup); form.addRow(b)
+        if auto_discover:
+            self.find_servers()
+
+    def find_servers(self):
+        if self._discovery_thread is not None and self._discovery_thread.isRunning():
+            return
+        self.find_servers_button.setEnabled(False)
+        self.discovery_status.setText('Scanning the local network for NEXLINK servers…')
+        worker=ServerDiscoveryWorker(self)
+        worker.servers_found.connect(self._on_servers_found)
+        worker.finished.connect(self._on_discovery_finished)
+        self._discovery_thread=worker
+        worker.start()
+
+    def _on_discovery_finished(self):
+        self.find_servers_button.setEnabled(True)
+        worker=self._discovery_thread
+        self._discovery_thread=None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_servers_found(self,servers):
+        self.discovered_servers.clear()
+        self.discovered_servers.addItem('Choose a NEXLINK server found on this LAN…','')
+        for server in servers:
+            url=server.get('url')
+            if not url:
+                continue
+            host=server.get('hostname') or 'NEXLINK Server'
+            self.discovered_servers.addItem(f"{host} — {server.get('ip')}:{server.get('port',8000)}",url)
+        count=self.discovered_servers.count()-1
+        if count == 1:
+            self.discovery_status.setText('One server found. Its address has been filled in; confirm it before saving.')
+            self.discovered_servers.setCurrentIndex(1)
+        elif count > 1:
+            self.discovery_status.setText(f'{count} servers found. Choose the server you want to use.')
+        else:
+            self.discovery_status.setText('No server found. Enter its address manually or scan again.')
+
+    def _select_discovered_server(self,index):
+        url=self.discovered_servers.itemData(index)
+        if url:
+            self.server.setText(url)
+
+    def closeEvent(self,event):
+        if self._discovery_thread is not None and self._discovery_thread.isRunning():
+            self._discovery_thread.wait(3000)
+        event.accept()
+
     def accept_setup(self):
         if not self.server.text().strip(): QMessageBox.warning(self,'NEXLINK','Enter the server address.'); return
         try:
@@ -124,6 +197,16 @@ def _self_test():
             assert AgentConfig.load().server_url == 'http://127.0.0.1:8000'
             app = QApplication.instance() or QApplication([])
             app.setApplicationName('NEXLINK Build Smoke Test')
+            setup=SetupDialog(auto_discover=False)
+            setup._on_servers_found([{
+                'hostname':'NEXLINK-SERVER',
+                'ip':'192.168.1.20',
+                'port':8000,
+                'url':'http://192.168.1.20:8000',
+            }])
+            assert setup.discovered_servers.count() == 2
+            assert setup.server.text() == 'http://192.168.1.20:8000'
+            setup.close()
             window = NEXLINKWindow(smoke_test=True)
             assert window.windowTitle() == 'NEXLINK Command Center'
             assert window.tabs.count() == 1

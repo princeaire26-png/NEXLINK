@@ -138,7 +138,10 @@ def get_discovered_clients(max_age: float = 20.0) -> list[dict]:
     """
     cutoff = time.time() - max_age
     with _discovered_lock:
-        stale = [k for k, v in _discovered_clients.items() if float(v.get("timestamp", 0)) < cutoff]
+        stale = [
+            k for k, v in _discovered_clients.items()
+            if float(v.get("last_seen", v.get("timestamp", 0))) < cutoff
+        ]
         for k in stale:
             _discovered_clients.pop(k, None)
         return sorted((dict(v) for v in _discovered_clients.values()),
@@ -201,14 +204,23 @@ class DiscoveryResponder:
         self.api_port = api_port
         self.port = port
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self.error: Exception | None = None
 
     def start(self) -> "DiscoveryResponder":
         if self._thread and self._thread.is_alive():
             return self
+        self.error = None
+        self._ready.clear()
         self._thread = threading.Thread(target=self._run, name="NEXLINK-LAN-Discovery", daemon=True)
         self._thread.start()
+        if not self._ready.wait(timeout=3.0):
+            self.stop()
+            raise RuntimeError("NEXLINK LAN discovery did not start within 3 seconds.")
+        if self.error is not None:
+            self.stop()
+            raise RuntimeError(f"NEXLINK LAN discovery could not start: {self.error}") from self.error
         return self
 
     def stop(self) -> None:
@@ -223,6 +235,7 @@ class DiscoveryResponder:
             sock.bind(("0.0.0.0", self.port))
             sock.settimeout(0.5)
             response = json.dumps(_response(self.api_port), separators=(",", ":")).encode("utf-8")
+            self._ready.set()
             while not self._stop.is_set():
                 try:
                     raw, addr = sock.recvfrom(4096)
@@ -253,5 +266,6 @@ class DiscoveryResponder:
                         _discovered_clients[device_id] = item
         except Exception as exc:
             self.error = exc
+            self._ready.set()
         finally:
             sock.close()

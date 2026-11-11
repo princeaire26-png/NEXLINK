@@ -14,6 +14,8 @@
 - Existing older NEXLINK databases are recognized without replaying the initial non-idempotent migration.
 - Added first-owner account creation to the Server Command Center login screen.
 - Added a native Inno Setup installer definition with Start Menu shortcuts and optional Windows startup.
+- Wired LAN discovery into the actual packaged GUIs: Client setup scans and selects Server instances, the Client agent announces itself, and the Server GUI lists recently seen LAN clients.
+- Added independent Windows Firewall checks for TCP 8000 and UDP 39501 so an existing API rule does not prevent discovery from being enabled.
 
 ## Deployment model
 
